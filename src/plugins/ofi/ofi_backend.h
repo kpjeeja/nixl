@@ -101,6 +101,10 @@ public:
     nixl_status_t loadRemoteMD(const nixlBlobDesc &input, const nixl_mem_t &nixl_mem, 
                                const std::string &remote_agent, nixlBackendMD* &output) override;
 
+    // Notification methods (required when supportsNotif() = true)
+    nixl_status_t getNotifs(notif_list_t &notif_list) override;
+    nixl_status_t genNotif(const std::string &remote_agent, const std::string &msg) const override;
+
 private:
     // type definitions and nested classes
     struct ProviderConfig {
