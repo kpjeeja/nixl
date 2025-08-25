@@ -32,7 +32,6 @@
 
 #include <dlfcn.h>
 #include "habanalabs/synapse_api.h"
-#include "habanalabs/hlthunk.h"
 
 #include <string>
 #include <map>
