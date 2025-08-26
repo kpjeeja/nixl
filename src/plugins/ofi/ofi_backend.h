@@ -52,7 +52,7 @@ public:
 class nixlOfiRequest : public nixlBackendReqH {
 public:
     fid_cq *cq;
-    uint64_t wr_id;
+    std::atomic<uint64_t> wr_id;  // CRITICAL FIX: Atomic completion tracking
 
     nixlOfiRequest() : cq(nullptr), wr_id(0) { }
     ~nixlOfiRequest() { }
@@ -145,13 +145,16 @@ private:
     void getLongParam(const nixlBackendInitParams* init_params, const std::string& key, long& value, long min_val, long max_val);
     void getSizeTParam(const nixlBackendInitParams* init_params, const std::string& key, size_t& value);
     
+    // connection helpers
+    nixl_status_t connect_unlocked(const std::string &remote_agent);
+    
     void configureHintsForProvider(struct fi_info* hints, const std::string& provider_name);
     
     // Memory registration helpers
     static uint64_t getMemoryRegistrationAccessFlags(const struct fi_info* fi_info);
     fi_hmem_iface selectHmemInterface(const nixlBlobDesc &mem, uint64_t &device_id) const;
     nixl_status_t registerDramMemory(const nixlBlobDesc &mem, nixlOfiMetadata *ofi_meta) const;
-    nixl_status_t registerVramMemory(const nixlBlobDesc &mem, nixlOfiMetadata *ofi_meta) const;
+    nixl_status_t registerHmemMemory(const nixlBlobDesc &mem, nixlOfiMetadata *ofi_meta, fi_hmem_iface iface, uint64_t device_id) const;
 
     // data members
     fid_fabric *fabric_;
