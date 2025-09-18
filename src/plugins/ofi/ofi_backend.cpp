@@ -31,6 +31,8 @@
 #define OFI_POST(post_fn, cq, seq, op_str, ...)                            \
     do {                                                                    \
         int ret, progress_ret;                                              \
+        int retry_count = 0;                                                \
+        const int MAX_RETRIES = 1000;                                       \
         while (1) {                                                         \
             ret = post_fn(__VA_ARGS__);                                     \
             if (!ret) {                                                     \
@@ -38,6 +40,10 @@
             }                                                               \
             if (ret != -FI_EAGAIN) {                                        \
                 NIXL_ERROR << "OFI " op_str " failed: " << fi_strerror(-ret) << " (" << ret << ")"; \
+                return NIXL_ERR_BACKEND;                                    \
+            }                                                               \
+            if (++retry_count > MAX_RETRIES) {                              \
+                NIXL_ERROR << "OFI " op_str " exceeded max retries (" << MAX_RETRIES << ")"; \
                 return NIXL_ERR_BACKEND;                                    \
             }                                                               \
             progress_ret = ofi_progress_manual(cq);                         \
@@ -77,7 +83,7 @@ nixlOfiEngine::nixlOfiEngine(const nixlBackendInitParams* init_params) :
     shutdownFlag_(false),
     connectionProgressEnabled_(false),
     connectionProgressDelay_(10000), // 10ms for connection events
-    lastProgressTime_(std::chrono::steady_clock::now()),
+    lastProgressTime_{std::chrono::steady_clock::now()},
     hmemZeSupported_(false),
     hmemCudaSupported_(false),
     hmemSynapseaiSupported_(false)
@@ -1076,9 +1082,13 @@ void nixlOfiEngine::driveProgress() const {
 
 void nixlOfiEngine::driveProgressIfNeeded() const {
     auto now = std::chrono::steady_clock::now();
-    if (now - lastProgressTime_ >= PROGRESS_INTERVAL) {
-        driveProgress();
-        lastProgressTime_ = now;
+    auto expected = lastProgressTime_.load();
+
+    if (now - expected >= PROGRESS_INTERVAL) {
+        // Atomic compare-and-swap to prevent race condition
+        if (lastProgressTime_.compare_exchange_weak(expected, now)) {
+            driveProgress();
+        }
     }
 }
 
@@ -1098,9 +1108,18 @@ int nixlOfiEngine::ofi_progress_manual(fid_cq *cq) const {
         struct fi_cq_err_entry err_entry;
         ret = fi_cq_readerr(cq, &err_entry, 0);
         if (ret < 0) {
-            NIXL_ERROR << "fi_cq_readerr failed: " << fi_strerror(-ret);
+            if (!shutdownFlag_.load()) {
+                NIXL_ERROR << "fi_cq_readerr failed: " << fi_strerror(-ret);
+            }
         } else {
-            NIXL_ERROR << "CQ error: " << fi_strerror(err_entry.err);
+            // Don't log cancellation errors during shutdown as errors
+            if (err_entry.err == FI_ECANCELED && shutdownFlag_.load()) {
+                NIXL_DEBUG << "Operation canceled during shutdown: " << fi_strerror(err_entry.err);
+            } else if (err_entry.err == FI_EIO && shutdownFlag_.load()) {
+                NIXL_DEBUG << "I/O error during shutdown: " << fi_strerror(err_entry.err);
+            } else {
+                NIXL_ERROR << "CQ error: " << fi_strerror(err_entry.err);
+            }
         }
         return -FI_EAVAIL;
     }
@@ -1166,7 +1185,14 @@ nixl_status_t nixlOfiEngine::checkXfer(nixlBackendReqH* handle) const {
         struct fi_cq_err_entry err_entry;
         int err_ret = fi_cq_readerr(ofi_req->cq, &err_entry, 0);
         if (err_ret > 0) {
-            NIXL_ERROR << "CQ error completion: " << fi_strerror(err_entry.err) << " provider=" << err_entry.prov_errno;
+            // Don't log cancellation errors during shutdown as errors
+            if (err_entry.err == FI_ECANCELED && shutdownFlag_.load()) {
+                NIXL_DEBUG << "checkXfer: Operation canceled during shutdown";
+            } else if (err_entry.err == FI_EIO && shutdownFlag_.load()) {
+                NIXL_DEBUG << "checkXfer: I/O error during shutdown";
+            } else {
+                NIXL_ERROR << "CQ error completion: " << fi_strerror(err_entry.err) << " provider=" << err_entry.prov_errno;
+            }
 
             // cleanup context on error and count as completion
             if (err_entry.op_context) {

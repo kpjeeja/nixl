@@ -195,7 +195,7 @@ private:
     nixlTime::us_t connectionProgressDelay_;
 
     // intelligent main-thread progress rate limiting
-    mutable std::chrono::steady_clock::time_point lastProgressTime_;
+    mutable std::atomic<std::chrono::steady_clock::time_point> lastProgressTime_;
     static const std::chrono::milliseconds PROGRESS_INTERVAL;
     bool hmemZeSupported_;
     bool hmemCudaSupported_;
