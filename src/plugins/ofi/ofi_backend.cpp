@@ -28,11 +28,9 @@
 #include <cstdlib>
 
 // OFI_POST macro based on libfabric FT_POST pattern for reliable operation posting
-#define OFI_POST(post_fn, cq, seq, op_str, ...)                            \
+#define OFI_POST(post_fn, cq, seq, op_str, ...)                             \
     do {                                                                    \
         int ret, progress_ret;                                              \
-        int retry_count = 0;                                                \
-        const int MAX_RETRIES = 1000;                                       \
         while (1) {                                                         \
             ret = post_fn(__VA_ARGS__);                                     \
             if (!ret) {                                                     \
@@ -40,10 +38,6 @@
             }                                                               \
             if (ret != -FI_EAGAIN) {                                        \
                 NIXL_ERROR << "OFI " op_str " failed: " << fi_strerror(-ret) << " (" << ret << ")"; \
-                return NIXL_ERR_BACKEND;                                    \
-            }                                                               \
-            if (++retry_count > MAX_RETRIES) {                              \
-                NIXL_ERROR << "OFI " op_str " exceeded max retries (" << MAX_RETRIES << ")"; \
                 return NIXL_ERR_BACKEND;                                    \
             }                                                               \
             progress_ret = ofi_progress_manual(cq);                         \
@@ -62,7 +56,7 @@ nixlOfiEngine::synapseai_ops nixlOfiEngine::synapseai_ops_ = {};
 static std::mutex synapseai_init_mutex_;
 
 // progress rate limiting constant
-const std::chrono::milliseconds nixlOfiEngine::PROGRESS_INTERVAL{5};
+const std::chrono::milliseconds nixlOfiEngine::PROGRESS_INTERVAL{1};
 
 nixlOfiEngine::nixlOfiEngine(const nixlBackendInitParams* init_params) :
     nixlBackendEngine(init_params),
@@ -1043,8 +1037,8 @@ void nixlOfiEngine::connectionProgressFunc() {
         // for connection-oriented providers, EQ events are handled by eq_event_loop
         // so this thread mainly drives CQ for incoming data
 
-        // sleep with configurable delay (longer than data operations)
-        auto delay = connectionProgressDelay_ > 0 ? connectionProgressDelay_ : 10000; // 10ms default
+        // aggressive progress for verbs;ofi_rxm - much shorter delay
+        auto delay = connectionProgressDelay_ > 0 ? connectionProgressDelay_ : 1000; // 1ms default for RXM
         std::this_thread::sleep_for(std::chrono::microseconds(delay));
     }
 
@@ -1097,35 +1091,47 @@ int nixlOfiEngine::ofi_progress_manual(fid_cq *cq) const {
         return -FI_EINVAL;
     }
 
-    struct fi_cq_data_entry comp;
-    int ret = fi_cq_read(cq, &comp, 1);
+    // read multiple completions for better RXM performance
+    const size_t batch_size = 8;
+    struct fi_cq_data_entry comps[batch_size];
+    int total_processed = 0;
 
-    if (ret >= 0 || ret == -FI_EAGAIN) {
-        return ret;
-    }
+    // try to read multiple completions in batches
+    for (int batch = 0; batch < 3; batch++) {
+        int ret = fi_cq_read(cq, comps, batch_size);
 
-    if (ret == -FI_EAVAIL) {
-        struct fi_cq_err_entry err_entry;
-        ret = fi_cq_readerr(cq, &err_entry, 0);
-        if (ret < 0) {
-            if (!shutdownFlag_.load()) {
-                NIXL_ERROR << "fi_cq_readerr failed: " << fi_strerror(-ret);
-            }
-        } else {
-            // Don't log cancellation errors during shutdown as errors
-            if (err_entry.err == FI_ECANCELED && shutdownFlag_.load()) {
-                NIXL_DEBUG << "Operation canceled during shutdown: " << fi_strerror(err_entry.err);
-            } else if (err_entry.err == FI_EIO && shutdownFlag_.load()) {
-                NIXL_DEBUG << "I/O error during shutdown: " << fi_strerror(err_entry.err);
+        if (ret > 0) {
+            total_processed += ret;
+            continue; // try to read more
+        } else if (ret == -FI_EAGAIN) {
+            break; // no more completions
+        } else if (ret == -FI_EAVAIL) {
+            struct fi_cq_err_entry err_entry;
+            ret = fi_cq_readerr(cq, &err_entry, 0);
+            if (ret < 0) {
+                if (!shutdownFlag_.load()) {
+                    NIXL_ERROR << "fi_cq_readerr failed: " << fi_strerror(-ret);
+                }
             } else {
-                NIXL_ERROR << "CQ error: " << fi_strerror(err_entry.err);
+                // Don't log cancellation errors during shutdown as errors
+                if (err_entry.err == FI_ECANCELED && shutdownFlag_.load()) {
+                    NIXL_DEBUG << "Operation canceled during shutdown: " << fi_strerror(err_entry.err);
+                } else if (err_entry.err == FI_EIO && shutdownFlag_.load()) {
+                    NIXL_DEBUG << "I/O error during shutdown: " << fi_strerror(err_entry.err);
+                } else {
+                    NIXL_ERROR << "CQ error: " << fi_strerror(err_entry.err);
+                }
             }
+            return -FI_EAVAIL;
+        } else {
+            if (!shutdownFlag_.load()) {
+                NIXL_ERROR << "fi_cq_read failed: " << fi_strerror(-ret);
+            }
+            return ret;
         }
-        return -FI_EAVAIL;
     }
 
-    NIXL_ERROR << "fi_cq_read failed: " << fi_strerror(-ret);
-    return ret;
+    return total_processed > 0 ? total_processed : -FI_EAGAIN;
 }
 
 nixl_status_t nixlOfiEngine::checkXfer(nixlBackendReqH* handle) const {
