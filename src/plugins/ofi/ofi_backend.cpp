@@ -1227,56 +1227,100 @@ nixl_status_t nixlOfiEngine::releaseReqH(nixlBackendReqH* handle) const {
     if (!ofi_req) {
         return NIXL_ERR_INVALID_PARAM;
     }
-    
-    // try to drain a few pending completions to prevent context leaks
-    if (ofi_req->wr_id.load() > 0) {
-        if (!shutdownFlag_.load()) {
-            int drain_attempts = 0;
-            const int max_drain_attempts = 10; // reduced from 1000 to be less aggressive
 
-            while (ofi_req->wr_id.load() > 0 && drain_attempts < max_drain_attempts) {
-                // drain completions directly without checkXfer to avoid shutdown flag interference
-                const size_t batch_size = 16;
-                struct fi_cq_data_entry entries[batch_size];
-                uint64_t expected_completions = ofi_req->wr_id.load();
-                size_t max_read = std::min(expected_completions, batch_size);
+    // try to drain pending completions to prevent context leaks
+    uint64_t pending_ops = ofi_req->wr_id.load();
+    if (pending_ops > 0) {
+        int drain_attempts = 0;
+        // dynamic max attempts based on pending operations, with reasonable bounds
+        const int base_attempts = 50;
+        const int max_attempts = std::min(static_cast<int>(pending_ops * 5), 500);
+        const int total_attempts = std::max(base_attempts, max_attempts);
 
-                int ret = fi_cq_read(ofi_req->cq, entries, max_read);
-                if (ret > 0) {
-                    // process completions and free contexts
-                    for (int i = 0; i < ret; ++i) {
-                        if (entries[i].op_context) {
-                            delete static_cast<uint64_t*>(entries[i].op_context);
-                        }
+        NIXL_DEBUG << "Draining " << pending_ops << " pending operations (max attempts: " << total_attempts << ")";
+
+        while (ofi_req->wr_id.load() > 0 && drain_attempts < total_attempts) {
+            // drain completions in batches
+            const size_t batch_size = 16;
+            struct fi_cq_data_entry entries[batch_size];
+            uint64_t expected_completions = ofi_req->wr_id.load();
+            size_t max_read = std::min(expected_completions, batch_size);
+
+            int ret = fi_cq_read(ofi_req->cq, entries, max_read);
+            if (ret > 0) {
+                // process completions and free contexts
+                for (int i = 0; i < ret; ++i) {
+                    if (entries[i].op_context) {
+                        delete static_cast<uint64_t*>(entries[i].op_context);
+                    }
+                }
+
+                // atomic update of completion count using compare-exchange to prevent races
+                uint64_t expected = ofi_req->wr_id.load();
+                uint64_t new_count;
+                do {
+                    new_count = (expected >= static_cast<uint64_t>(ret)) ? expected - ret : 0;
+                } while (!ofi_req->wr_id.compare_exchange_weak(expected, new_count));
+
+                NIXL_DEBUG << "Drained " << ret << " completions, " << new_count << " remaining";
+            } else if (ret == -FI_EAGAIN) {
+                // no completions available, wait briefly and retry
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+            } else if (ret == -FI_EAVAIL) {
+                // handle error completions
+                struct fi_cq_err_entry err_entry;
+                int err_ret = fi_cq_readerr(ofi_req->cq, &err_entry, 0);
+                if (err_ret > 0) {
+                    if (shutdownFlag_.load()) {
+                        NIXL_DEBUG << "Error completion during shutdown: " << fi_strerror(err_entry.err);
+                    } else {
+                        NIXL_WARN << "Error completion in releaseReqH: " << fi_strerror(err_entry.err);
                     }
 
-                    // update completion count atomically
+                    // cleanup context on error and count as completion
+                    if (err_entry.op_context) {
+                        delete static_cast<uint64_t*>(err_entry.op_context);
+                    }
+
+                    // atomically decrement remaining operations
                     uint64_t expected = ofi_req->wr_id.load();
-                    uint64_t new_count = (expected >= (uint64_t)ret) ? expected - ret : 0;
-                    ofi_req->wr_id.store(new_count);
-                } else if (ret < 0 && ret != -FI_EAGAIN) {
-                    break; // stop on CQ error
+                    uint64_t new_count;
+                    do {
+                        new_count = expected > 0 ? expected - 1 : 0;
+                    } while (!ofi_req->wr_id.compare_exchange_weak(expected, new_count));
                 }
-
-                drain_attempts++;
-
-                if (ofi_req->wr_id.load() > 0) {
-                    usleep(100); // 100 microseconds - slightly longer delay
+            } else {
+                // other CQ errors - log but continue trying for a few more attempts
+                if (!shutdownFlag_.load()) {
+                    NIXL_WARN << "CQ read error in releaseReqH: " << fi_strerror(-ret);
+                }
+                // give a few more chances for transient errors
+                if (drain_attempts < total_attempts - 10) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(500));
+                } else {
+                    break; // stop if we're near the limit
                 }
             }
+
+            drain_attempts++;
         }
 
-        // if still pending, just log and continue - better than hanging
+        // log final status
         uint64_t remaining = ofi_req->wr_id.load();
         if (remaining > 0) {
             if (shutdownFlag_.load()) {
-                NIXL_DEBUG << "Shutdown: releasing request with " << remaining << " pending operations (contexts may leak)";
+                NIXL_DEBUG << "Shutdown: releasing request with " << remaining
+                          << " pending operations after " << drain_attempts << " attempts";
             } else {
-                NIXL_DEBUG << "Releasing request with " << remaining << " pending operations";
+                NIXL_WARN << "Releasing request with " << remaining
+                         << " pending operations after " << drain_attempts
+                         << " attempts (potential context leak)";
             }
+        } else {
+            NIXL_DEBUG << "Successfully drained all operations after " << drain_attempts << " attempts";
         }
     }
-    
+
     delete ofi_req;
     return NIXL_SUCCESS;
 }
