@@ -48,22 +48,22 @@ public:
     ~nixlLibfabricRailManager();
 
     // Rail management
-    /** Create data rails for high-bandwidth transfers (one per EFA device)
-     * @param efa_devices List of EFA device names to create rails on
-     * @param provider_name Provider name ("efa" or "efa-direct")
+    /** Create data rails for high-bandwidth transfers (one per fabric device)
+     * @param fabric_devices List of fabric device names to create rails on
+     * @param provider_name Provider name (e.g., "efa", "verbs", "sockets")
      * @return NIXL_SUCCESS on success, error code on failure
      */
     nixl_status_t
-    createDataRails(const std::vector<std::string> &efa_devices, const std::string &provider_name);
+    createDataRails(const std::vector<std::string> &fabric_devices, const std::string &provider_name);
 
     /** Create control rails for connection management and notifications
-     * @param efa_devices List of EFA device names
-     * @param provider_name Provider name ("efa" or "efa-direct")
+     * @param fabric_devices List of fabric device names
+     * @param provider_name Provider name (e.g., "efa", "verbs", "sockets")
      * @param num_control_rails Number of control rails to create
      * @return NIXL_SUCCESS on success, error code on failure
      */
     nixl_status_t
-    createControlRails(const std::vector<std::string> &efa_devices,
+    createControlRails(const std::vector<std::string> &fabric_devices,
                        const std::string &provider_name,
                        size_t num_control_rails);
 
@@ -307,8 +307,8 @@ private:
 
     std::unique_ptr<nixlLibfabricTopology> topology;
 
-    // EFA device to rail mapping
-    std::unordered_map<std::string, size_t> efa_device_to_rail_map;
+    // Fabric device to rail mapping
+    std::unordered_map<std::string, size_t> device_to_rail_map;
 
     // Active Rail Tracking System
     std::unordered_set<size_t> active_rails_;

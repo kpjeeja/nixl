@@ -422,7 +422,7 @@ nixlLibfabricRail::nixlLibfabricRail(const std::string &device,
         hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ALLOCATED;
         hints->domain_attr->mr_key_size = 0; // Let provider decide
     } else {
-        // EFA and other providers support advanced memory registration
+        // EFA, verbs and other providers support advanced memory registration
         hints->domain_attr->mr_mode =
             FI_MR_LOCAL | FI_MR_HMEM | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY;
         hints->domain_attr->mr_key_size = 2;

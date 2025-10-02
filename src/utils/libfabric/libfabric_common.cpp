@@ -87,6 +87,8 @@ getAvailableNetworkDevices() {
 
     if (provider_device_map.find("efa") != provider_device_map.end()) {
         return {"efa", provider_device_map["efa"]};
+    } else if (provider_device_map.find("verbs") != provider_device_map.end()) {
+        return {"verbs", provider_device_map["verbs"]};
     } else if (provider_device_map.find("sockets") != provider_device_map.end()) {
         return {"sockets", {provider_device_map["sockets"][0]}};
     }
