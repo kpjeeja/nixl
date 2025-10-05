@@ -21,6 +21,7 @@ EFA Specific **Topology-Aware Optimization**: Hardware-aware GPU-to-EFA and NUMA
 - **Libfabric**
   - Many system will have installed libfabric already. If not, custom libfabric installation is available via https://ofiwg.github.io/libfabric/ - Minimum required version: v2.3.0rc2
   - For EFA enabled AWS instances, it is recommanded to install through AWS EFA installer: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html - Minimum required version: 1.43.2
+  - **Note:** HMEM support for some GPU implementations (SynapseAI, etc.) requires libfabric v1.16.x or newer
 
 - **hwloc**
   - hwloc is used to understand the underlying architecture to optimize application performance. Suggested version: 2.10.0 or newer

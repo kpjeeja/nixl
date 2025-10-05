@@ -411,27 +411,30 @@ nixlLibfabricRail::nixlLibfabricRail(const std::string &device,
         NIXL_ERROR << "fi_allocinfo failed for rail " << rail_id;
         throw std::runtime_error("Failed to allocate fi_info for rail " + std::to_string(rail_id));
     }
-    hints->caps = 0;
-    hints->caps = FI_MSG | FI_RMA;
-    hints->caps |= FI_LOCAL_COMM | FI_REMOTE_COMM;
-    hints->mode = FI_CONTEXT | FI_CONTEXT2;
-    hints->ep_attr->type = FI_EP_RDM;
-    // Configure memory registration mode based on provider capabilities
+
+    // Configure hints based on provider
+    LibfabricUtils::configureHintsForProvider(hints, provider);
+
+    // Override mr_mode for TCP/sockets (they don't support advanced MR features)
     if (provider == "tcp" || provider == "sockets") {
-        // TCP provider doesn't support FI_MR_PROV_KEY or FI_MR_VIRT_ADDR, use basic mode
         hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ALLOCATED;
         hints->domain_attr->mr_key_size = 0; // Let provider decide
     } else {
-        // EFA, verbs and other providers support advanced memory registration
-        hints->domain_attr->mr_mode =
-            FI_MR_LOCAL | FI_MR_HMEM | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY;
+        // Add HMEM support for other providers (EFA, verbs)
+        if (hints->domain_attr->mr_mode != 0) {
+            hints->domain_attr->mr_mode |= FI_MR_HMEM;
+        } else {
+            hints->domain_attr->mr_mode =
+                FI_MR_LOCAL | FI_MR_HMEM | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY;
+        }
         hints->domain_attr->mr_key_size = 2;
     }
+
     hints->domain_attr->name = strdup(device_name.c_str());
-    hints->domain_attr->threading = FI_THREAD_SAFE;
     try {
         // Get fabric info for this specific device
-        int ret = fi_getinfo(FI_VERSION(1, 9), NULL, NULL, 0, hints, &info);
+        // Use FI_VERSION(1, 16) for HMEM support for some GPU implementations
+        int ret = fi_getinfo(FI_VERSION(1, 16), NULL, NULL, 0, hints, &info);
         if (ret) {
             NIXL_ERROR << "fi_getinfo failed for rail " << rail_id << ": " << fi_strerror(-ret);
             throw std::runtime_error("fi_getinfo failed for rail " + std::to_string(rail_id));
