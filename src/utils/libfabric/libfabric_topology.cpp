@@ -114,8 +114,10 @@ nixlLibfabricTopology::discoverTopology() {
 
 bool
 nixlLibfabricTopology::isRdmaProvider() const {
+    // Check for exact match or composite provider (e.g., "verbs;ofi_rxm")
     return (provider_name == "efa" ||
             provider_name == "verbs" ||
+            provider_name.rfind("verbs;", 0) == 0 ||  // verbs;ofi_rxm, verbs;*
             provider_name == "psm2" ||
             provider_name == "cxi");
 }
@@ -436,6 +438,7 @@ nixlLibfabricTopology::buildPcieToLibfabricMapping() {
     // Configure hints for the discovered provider
     // This ensures consistency between device discovery and PCIe mapping
     hints->fabric_attr->prov_name = strdup(provider_name.c_str());
+    LibfabricUtils::configureHintsForProvider(hints, provider_name);
 
     int ret = fi_getinfo(FI_VERSION(1, 18), NULL, NULL, 0, hints, &info);
     if (ret) {
