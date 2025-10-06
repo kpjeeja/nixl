@@ -31,50 +31,44 @@ namespace LibfabricUtils {
 
 // Provider-specific configurations
 static const ProviderConfig PROVIDER_CONFIGS[] = {
-    {
-        "efa",
-        FI_MSG | FI_RMA | FI_LOCAL_COMM | FI_REMOTE_COMM,
-        FI_CONTEXT | FI_CONTEXT2,
-        0,  // let provider choose
-        FI_RM_UNSPEC,
-        FI_THREAD_SAFE
-    },
-    {
-        "verbs",  // Matches both "verbs" and "verbs;ofi_rxm"
-        FI_MSG | FI_RMA | FI_READ | FI_REMOTE_READ,
-        0,  // no mode flags required
-        FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY,
-        FI_RM_ENABLED,
-        FI_THREAD_SAFE
-    },
-    {
-        "tcp",
-        FI_MSG | FI_RMA | FI_LOCAL_COMM | FI_REMOTE_COMM,
-        FI_CONTEXT | FI_CONTEXT2,
-        0,  // basic MR mode, overridden in rail.cpp
-        FI_RM_UNSPEC,
-        FI_THREAD_UNSPEC
-    },
+    {"efa",
+     FI_MSG | FI_RMA | FI_LOCAL_COMM | FI_REMOTE_COMM,
+     FI_CONTEXT | FI_CONTEXT2,
+     0, // let provider choose
+     FI_RM_UNSPEC,
+     FI_THREAD_SAFE},
+    {"verbs", // Matches both "verbs" and "verbs;ofi_rxm"
+     FI_MSG | FI_RMA | FI_READ | FI_WRITE | FI_RECV | FI_SEND | FI_REMOTE_READ | FI_REMOTE_WRITE |
+         FI_MULTI_RECV | FI_LOCAL_COMM | FI_REMOTE_COMM | FI_HMEM,
+     0, // no mode flags required
+     FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_HMEM,
+     FI_RM_ENABLED,
+     FI_THREAD_SAFE},
+    {"tcp",
+     FI_MSG | FI_RMA | FI_LOCAL_COMM | FI_REMOTE_COMM,
+     FI_CONTEXT | FI_CONTEXT2,
+     0, // basic MR mode, overridden in rail.cpp
+     FI_RM_UNSPEC,
+     FI_THREAD_UNSPEC},
     {
         "sockets",
         FI_MSG | FI_RMA | FI_LOCAL_COMM | FI_REMOTE_COMM,
         0,
-        0,  // let provider choose
+        0, // let provider choose
         FI_RM_UNSPEC,
-        FI_THREAD_UNSPEC  // default threading
-    }
-};
+        FI_THREAD_UNSPEC // default threading
+    }};
 
 static const size_t NUM_PROVIDER_CONFIGS = sizeof(PROVIDER_CONFIGS) / sizeof(PROVIDER_CONFIGS[0]);
 
 void
-configureHintsForProvider(struct fi_info* hints, const std::string& provider_name) {
-    const ProviderConfig* config = nullptr;
+configureHintsForProvider(struct fi_info *hints, const std::string &provider_name) {
+    const ProviderConfig *config = nullptr;
 
     // Find matching config
     // Match order: 1) exact match, 2) prefix match for composite providers (e.g., "verbs;ofi_rxm")
     for (size_t i = 0; i < NUM_PROVIDER_CONFIGS; ++i) {
-        const std::string& config_name = PROVIDER_CONFIGS[i].name;
+        const std::string &config_name = PROVIDER_CONFIGS[i].name;
 
         // Exact match
         if (provider_name == config_name) {
@@ -131,7 +125,7 @@ getAvailableNetworkDevices() {
     }
 
     // Check if FI_PROVIDER environment variable is set
-    const char* env_provider = getenv("FI_PROVIDER");
+    const char *env_provider = getenv("FI_PROVIDER");
     std::string provider = env_provider && env_provider[0] != '\0' ? env_provider : "";
 
     if (!provider.empty()) {
@@ -144,7 +138,7 @@ getAvailableNetworkDevices() {
         configureHintsForProvider(hints, "");
     }
 
-    // Use FI_VERSION(1, 16) where HMEM support for some GPUs was added
+    // Use FI_VERSION(1, 18) for DMABUF and HMEM support
     int ret = fi_getinfo(FI_VERSION(1, 18), NULL, NULL, 0, hints, &info);
     if (ret) {
         NIXL_ERROR << "fi_getinfo failed: " << fi_strerror(-ret);

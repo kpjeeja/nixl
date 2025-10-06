@@ -72,7 +72,8 @@ nixlLibfabricTopology::discoverTopology() {
     if (status != NIXL_SUCCESS) {
         return status;
     }
-    // For RDMA providers (EFA, verbs, etc.), build PCIe to Libfabric device mapping and full topology
+    // For RDMA providers (EFA, verbs, etc.), build PCIe to Libfabric device mapping and full
+    // topology
     if (isRdmaProvider()) {
         // Build PCIe to Libfabric device mapping
         status = buildPcieToLibfabricMapping();
@@ -115,11 +116,9 @@ nixlLibfabricTopology::discoverTopology() {
 bool
 nixlLibfabricTopology::isRdmaProvider() const {
     // Check for exact match or composite provider (e.g., "verbs;ofi_rxm")
-    return (provider_name == "efa" ||
-            provider_name == "verbs" ||
-            provider_name.rfind("verbs;", 0) == 0 ||  // verbs;ofi_rxm, verbs;*
-            provider_name == "psm2" ||
-            provider_name == "cxi");
+    return (provider_name == "efa" || provider_name == "verbs" ||
+            provider_name.rfind("verbs;", 0) == 0 || // verbs;ofi_rxm, verbs;*
+            provider_name == "psm2" || provider_name == "cxi");
 }
 
 nixl_status_t
@@ -146,8 +145,8 @@ nixlLibfabricTopology::discoverDevices() {
     }
 
     for (size_t i = 0; i < all_devices.size(); ++i) {
-        NIXL_TRACE << "Device " << i << ": " << all_devices[i]
-                   << " (provider: " << provider_name << ")";
+        NIXL_TRACE << "Device " << i << ": " << all_devices[i] << " (provider: " << provider_name
+                   << ")";
     }
     return NIXL_SUCCESS;
 }
@@ -328,9 +327,9 @@ nixlLibfabricTopology::discoverGpusWithHwloc() {
             uint16_t device_id = pci_obj->attr->pcidev.device_id;
             uint16_t class_id = pci_obj->attr->pcidev.class_id;
 
-            NIXL_TRACE << "Found NVIDIA GPU " << num_nvidia_gpus << ": " << pcie_addr << " (vendor=0x"
-                       << std::hex << vendor_id << ", device=0x" << device_id << ", class=0x"
-                       << class_id << std::dec << ")";
+            NIXL_TRACE << "Found NVIDIA GPU " << num_nvidia_gpus << ": " << pcie_addr
+                       << " (vendor=0x" << std::hex << vendor_id << ", device=0x" << device_id
+                       << ", class=0x" << class_id << std::dec << ")";
             num_nvidia_gpus++;
         } else if (isIntelHpu(pci_obj)) {
             std::string pcie_addr = getPcieAddressFromHwlocObj(pci_obj);
@@ -347,8 +346,8 @@ nixlLibfabricTopology::discoverGpusWithHwloc() {
     }
 
     num_gpus = num_nvidia_gpus + num_intel_hpus;
-    NIXL_TRACE << "Discovered " << num_gpus << " GPUs via hwloc (" << num_nvidia_gpus
-               << " NVIDIA, " << num_intel_hpus << " Intel HPU)";
+    NIXL_TRACE << "Discovered " << num_gpus << " GPUs via hwloc (" << num_nvidia_gpus << " NVIDIA, "
+               << num_intel_hpus << " Intel HPU)";
 
     // If we found more than 8 GPUs on P5en, investigate further
     // FIXME: add Habana related messages
@@ -402,7 +401,8 @@ nixlLibfabricTopology::discoverDevicesWithHwloc() {
         while ((pci_obj = hwloc_get_next_pcidev(hwloc_topology, pci_obj)) != nullptr) {
             if (isMellanoxNic(pci_obj)) {
                 hwloc_device_count++;
-                NIXL_TRACE << "Found Mellanox NIC via hwloc: " << getPcieAddressFromHwlocObj(pci_obj);
+                NIXL_TRACE << "Found Mellanox NIC via hwloc: "
+                           << getPcieAddressFromHwlocObj(pci_obj);
             }
         }
 
@@ -440,6 +440,7 @@ nixlLibfabricTopology::buildPcieToLibfabricMapping() {
     hints->fabric_attr->prov_name = strdup(provider_name.c_str());
     LibfabricUtils::configureHintsForProvider(hints, provider_name);
 
+    // Use FI_VERSION(1, 18) for DMABUF and HMEM support
     int ret = fi_getinfo(FI_VERSION(1, 18), NULL, NULL, 0, hints, &info);
     if (ret) {
         NIXL_ERROR << "fi_getinfo failed for PCIe mapping with provider " << provider_name << ": "
@@ -610,7 +611,6 @@ nixlLibfabricTopology::buildFallbackMapping() {
     return NIXL_SUCCESS;
 }
 
-
 // hwloc helper methods
 
 std::string
@@ -682,8 +682,7 @@ nixlLibfabricTopology::isMellanoxNic(hwloc_obj_t obj) const {
     // Class 0x0200 is Network controller (Ethernet)
     // Class 0x0207 is InfiniBand controller
     uint16_t class_id = obj->attr->pcidev.class_id;
-    return obj->attr->pcidev.vendor_id == 0x15b3 &&
-           (class_id == 0x0200 || class_id == 0x0207);
+    return obj->attr->pcidev.vendor_id == 0x15b3 && (class_id == 0x0200 || class_id == 0x0207);
 }
 
 nixl_status_t
