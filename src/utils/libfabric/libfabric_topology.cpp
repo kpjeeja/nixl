@@ -24,6 +24,7 @@
 #include <sstream>
 #include <algorithm>
 #include <set>
+#include <climits>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_domain.h>
@@ -449,30 +450,80 @@ nixlLibfabricTopology::buildPcieToLibfabricMapping() {
         return NIXL_ERR_BACKEND;
     }
 
+    int device_count = 0;
+    int mapped_count = 0;
     for (struct fi_info *cur = info; cur; cur = cur->next) {
-        if (cur->domain_attr && cur->domain_attr->name && cur->nic && cur->nic->bus_attr) {
-            std::string libfabric_name = cur->domain_attr->name;
-            // Extract PCIe address from bus_attr if available
-            if (cur->nic->bus_attr->bus_type == FI_BUS_PCI &&
-                cur->nic->bus_attr->attr.pci.domain_id != FI_ADDR_UNSPEC) {
-                char pcie_addr[32];
-                snprintf(pcie_addr,
-                         sizeof(pcie_addr),
-                         "%x:%02x:%02x.%x",
-                         cur->nic->bus_attr->attr.pci.domain_id,
-                         cur->nic->bus_attr->attr.pci.bus_id,
-                         cur->nic->bus_attr->attr.pci.device_id,
-                         cur->nic->bus_attr->attr.pci.function_id);
-
-                std::string pcie_address = pcie_addr;
-                pcie_to_libfabric_map[pcie_address] = libfabric_name;
-                libfabric_to_pcie_map[libfabric_name] = pcie_address;
-
-                NIXL_TRACE << "Mapped PCIe " << pcie_address << " → Libfabric " << libfabric_name
-                           << " (provider: " << provider_name << ")";
-            }
+        device_count++;
+        if (!cur->domain_attr || !cur->domain_attr->name) {
+            NIXL_DEBUG << "Device " << device_count << ": missing domain_attr or name";
+            continue;
         }
+
+        std::string libfabric_name = cur->domain_attr->name;
+        NIXL_DEBUG << "Processing device: " << libfabric_name;
+
+        if (!cur->nic) {
+            NIXL_DEBUG << "  Device " << libfabric_name << ": nic is NULL";
+            continue;
+        }
+
+        if (!cur->nic->bus_attr) {
+            NIXL_DEBUG << "  Device " << libfabric_name << ": bus_attr is NULL (likely bonded device)";
+            continue;
+        }
+
+        NIXL_DEBUG << "  Device " << libfabric_name << ": bus_type=" << cur->nic->bus_attr->bus_type;
+
+        if (cur->nic->bus_attr->bus_type != FI_BUS_PCI) {
+            NIXL_DEBUG << "  Device " << libfabric_name << ": not a PCI device, trying sysfs fallback";
+
+            // Fallback: Try to get PCIe address from sysfs for bonded/virtual devices
+            std::string sysfs_path = "/sys/class/infiniband/" + libfabric_name + "/device";
+            char resolved_path[PATH_MAX];
+            if (realpath(sysfs_path.c_str(), resolved_path)) {
+                // Parse PCIe address from path like: /sys/devices/pci0000:6d/0000:6d:02.0/0000:6e:00.0
+                std::string path_str(resolved_path);
+                size_t last_slash = path_str.rfind('/');
+                if (last_slash != std::string::npos) {
+                    std::string pcie_addr = path_str.substr(last_slash + 1);
+                    // Verify format: domain:bus:device.function (e.g., 0000:6e:00.0)
+                    if (pcie_addr.length() >= 7 && pcie_addr.find(':') != std::string::npos) {
+                        pcie_to_libfabric_map[pcie_addr] = libfabric_name;
+                        libfabric_to_pcie_map[libfabric_name] = pcie_addr;
+                        mapped_count++;
+                        NIXL_DEBUG << "  Successfully mapped PCIe " << pcie_addr << " → " << libfabric_name << " (via sysfs)";
+                        continue;
+                    }
+                }
+            }
+            NIXL_DEBUG << "  Device " << libfabric_name << ": sysfs fallback failed";
+            continue;
+        }
+
+        if (cur->nic->bus_attr->attr.pci.domain_id == FI_ADDR_UNSPEC) {
+            NIXL_DEBUG << "  Device " << libfabric_name << ": PCIe domain_id is FI_ADDR_UNSPEC";
+            continue;
+        }
+
+        // Extract PCIe address from bus_attr if available
+        char pcie_addr[32];
+        snprintf(pcie_addr,
+                 sizeof(pcie_addr),
+                 "%x:%02x:%02x.%x",
+                 cur->nic->bus_attr->attr.pci.domain_id,
+                 cur->nic->bus_attr->attr.pci.bus_id,
+                 cur->nic->bus_attr->attr.pci.device_id,
+                 cur->nic->bus_attr->attr.pci.function_id);
+
+        std::string pcie_address = pcie_addr;
+        pcie_to_libfabric_map[pcie_address] = libfabric_name;
+        libfabric_to_pcie_map[libfabric_name] = pcie_address;
+        mapped_count++;
+
+        NIXL_DEBUG << "  Successfully mapped PCIe " << pcie_address << " → Libfabric " << libfabric_name;
     }
+
+    NIXL_DEBUG << "PCIe mapping: processed " << device_count << " devices, successfully mapped " << mapped_count;
 
     fi_freeinfo(info);
     fi_freeinfo(hints);
@@ -502,10 +553,15 @@ nixlLibfabricTopology::buildTopologyAwareGrouping() {
     // Step 1: Build NIC info structures by correlating libfabric with hwloc
     std::vector<NicInfo> discovered_nics;
     std::vector<GpuInfo> discovered_gpus;
+
+    NIXL_DEBUG << "Starting NIC discovery: pcie_to_libfabric_map has " << pcie_to_libfabric_map.size() << " entries";
+
     // Discover NICs by correlating libfabric devices with hwloc objects
     for (const auto &pair : pcie_to_libfabric_map) {
         const std::string &pcie_addr = pair.first;
         const std::string &libfabric_name = pair.second;
+
+        NIXL_DEBUG << "Processing NIC: libfabric_name=" << libfabric_name << ", pcie_addr=" << pcie_addr;
 
         // Parse PCIe address
         uint16_t domain_id;
@@ -520,6 +576,9 @@ nixlLibfabricTopology::buildTopologyAwareGrouping() {
             continue;
         }
 
+        NIXL_DEBUG << "Parsed PCIe address: domain=" << domain_id << ", bus=" << (int)bus_id
+                   << ", device=" << (int)device_id << ", function=" << (int)function_id;
+
         // Find corresponding hwloc object
         hwloc_obj_t hwloc_node =
             hwloc_get_pcidev_by_busid(hwloc_topology, domain_id, bus_id, device_id, function_id);
@@ -533,15 +592,23 @@ nixlLibfabricTopology::buildTopologyAwareGrouping() {
             nic.device_id = device_id;
             nic.function_id = function_id;
             discovered_nics.push_back(nic);
-            NIXL_TRACE << "Correlated NIC: " << pcie_addr << " → " << libfabric_name;
+            NIXL_DEBUG << "Successfully correlated NIC: " << pcie_addr << " → " << libfabric_name;
         } else {
             NIXL_WARN << "Could not find hwloc object for PCIe address: " << pcie_addr;
         }
     }
+
+    NIXL_DEBUG << "NIC discovery complete: found " << discovered_nics.size() << " NICs";
+
     // Step 2: Discover GPUs
+    NIXL_DEBUG << "Starting GPU discovery";
     hwloc_obj_t pci_obj = nullptr;
+    int pci_device_count = 0;
+    int gpu_count = 0;
     while ((pci_obj = hwloc_get_next_pcidev(hwloc_topology, pci_obj)) != nullptr) {
+        pci_device_count++;
         if (isNvidiaGpu(pci_obj) || isIntelHpu(pci_obj)) {
+            gpu_count++;
             GpuInfo gpu;
             gpu.hwloc_node = pci_obj;
             gpu.domain_id = pci_obj->attr->pcidev.domain;
@@ -549,8 +616,11 @@ nixlLibfabricTopology::buildTopologyAwareGrouping() {
             gpu.device_id = pci_obj->attr->pcidev.dev;
             gpu.function_id = pci_obj->attr->pcidev.func;
             discovered_gpus.push_back(gpu);
+            NIXL_DEBUG << "Found GPU at " << std::hex << gpu.domain_id << ":"
+                       << (int)gpu.bus_id << ":" << (int)gpu.device_id << "." << (int)gpu.function_id << std::dec;
         }
     }
+    NIXL_DEBUG << "GPU discovery complete: scanned " << pci_device_count << " PCI devices, found " << discovered_gpus.size() << " GPUs";
 
     NIXL_TRACE << "Discovered " << discovered_nics.size() << " NICs and " << discovered_gpus.size()
                << " GPUs for grouping";

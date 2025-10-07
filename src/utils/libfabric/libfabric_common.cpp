@@ -23,6 +23,8 @@
 #include <sstream>
 #include <atomic>
 #include <cstring>
+#include <fstream>
+#include <algorithm>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_domain.h>
