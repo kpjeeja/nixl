@@ -21,7 +21,7 @@ UCX_BRANCH = 'v1.19.x'
 LIBFABRIC_REPO_URL = 'https://github.com/ofiwg/libfabric.git'
 LIBFABRIC_REF = 'v1.21.0'  # Using a recent stable tag
 NIXL_REPO_URL = 'https://github.com/intel-staging/nixl.git'
-NIXL_BRANCH = 'ofi'
+NIXL_BRANCH = 'v0.6.0_OFI'
 
 
 # --- Helper Functions ---

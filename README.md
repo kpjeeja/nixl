@@ -14,7 +14,7 @@ docker run -it --rm --runtime=habana --name=1.22.0-vllm-nixl -e HABANA_VISIBLE_D
 - install nixl
 
 ``` bash
-git clone https://github.com/intel-staging/nixl.git -b ofi
+git clone https://github.com/intel-staging/nixl.git -b v0.6.0_OFI
 cp -r nixl /tmp/nixl_source
 cd nixl
 python install_nixl.py
@@ -23,6 +23,7 @@ python install_nixl.py
 - test nixl
 
 ```bash
+pip install pandas msgspec pyzmq
 python nixl_api_test.py --nixl_backend OFI --block-size 128 --device-type hpu 2>&1 | tee nixl_OFI.log
 ```
 
