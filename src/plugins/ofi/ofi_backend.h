@@ -69,7 +69,6 @@ public:
     bool supportsNotif() const override;
     bool supportsRemote() const override;
     bool supportsLocal() const override;
-    bool supportsProgTh() const override;
 
     nixl_mem_list_t getSupportedMems() const override;
 

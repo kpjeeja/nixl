@@ -487,10 +487,6 @@ bool nixlOfiEngine::supportsLocal() const {
     return false;
 }
 
-bool nixlOfiEngine::supportsProgTh() const {
-    return true;
-}
-
 nixl_status_t nixlOfiEngine::getNotifs(notif_list_t &notif_list) {
     if (!notif_list.empty()) {
         return NIXL_ERR_INVALID_PARAM;
