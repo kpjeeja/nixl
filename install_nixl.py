@@ -4,6 +4,7 @@ import subprocess
 import sys
 import argparse
 import glob
+import shutil
 
 # --- Configuration ---
 WHEELS_CACHE_HOME = os.environ.get("WHEELS_CACHE_HOME", "/workspace/wheels_cache")
@@ -106,7 +107,6 @@ def build_and_install_prerequisites(args):
     os.makedirs(WHEELS_CACHE_HOME, exist_ok=True)
 
     # -- Step 1: Build UCX from source --
-    # ... (UCX build process is unchanged) ...
     print("\n[1/3] Configuring and building UCX from source...", flush=True)
     if not os.path.exists(UCX_DIR):
         run_command(['git', 'clone', UCX_REPO_URL, UCX_DIR])
@@ -165,34 +165,93 @@ def build_and_install_prerequisites(args):
     ucx_lib_path = os.path.join(ucx_install_path, 'lib')
     ucx_plugin_path = os.path.join(ucx_lib_path, 'ucx')
     lf_lib_path = os.path.join(lf_install_path, 'lib')
-    existing_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
-    build_env['LD_LIBRARY_PATH'] = f"{ucx_lib_path}:{ucx_plugin_path}:{lf_lib_path}:{existing_ld_path}".strip(':')
+    build_env['LD_LIBRARY_PATH'] = f"{ucx_lib_path}:{ucx_plugin_path}:{lf_lib_path}".strip(':')
     
     print(f"--> Using PKG_CONFIG_PATH: {build_env['PKG_CONFIG_PATH']}", flush=True)
     print(f"--> Using LD_LIBRARY_PATH: {build_env['LD_LIBRARY_PATH']}", flush=True)
 
     temp_wheel_dir = os.path.join(ROOT_DIR, 'temp_wheelhouse')
-    run_command([sys.executable, '-m', 'pip', 'wheel', '.', '--no-deps', f'--wheel-dir={temp_wheel_dir}'],
+        # Define the build command for nixl wheel with specific meson arguments
+    wheel_build_cmd = [
+        sys.executable, '-m', 'pip', 'wheel', '.',
+        '--no-deps',
+        f'--wheel-dir={temp_wheel_dir}',
+        # Pass meson arguments via pip's config-settings
+        '--config-settings=setup-args=-Ddisable_gds_backend=true',
+        f'--config-settings=setup-args=-Dlibfabric_path={lf_install_path}',
+        f'--config-settings=setup-args=-Ducx_path={ucx_install_path}',
+    ]
+
+    run_command(wheel_build_cmd,
                 cwd=os.path.abspath(NIXL_DIR),
                 env=build_env)
 
-    # -- Step 4: Repair the wheel to bundle dependencies --
-    print("\n[4/4] Repairing NIXL wheel to include UCX and Libfabric libraries...", flush=True)
+    # -- Step 4: Repair wheel, then replace libfabric --
+    # auditwheel may bundle an incompatible libfabric, so we need to replace it
+    print("\n[4/4] Repairing wheel with auditwheel and correcting libfabric...", flush=True)
     unrepaired_wheel = find_nixl_wheel_in_cache(temp_wheel_dir)
-    if not unrepaired_wheel:
-        raise RuntimeError("Failed to find the NIXL wheel after building it.")
+    if not unrepaired_wheel: raise RuntimeError("Failed to find the NIXL wheel after building it.")
 
-    auditwheel_command = [
-        'auditwheel', 'repair',
-        '--exclude', 'libplugin_UCX.so',  # Exclude the plugin mesonpy already handled
-        unrepaired_wheel,
-        f'--wheel-dir={WHEELS_CACHE_HOME}'
-    ]
-    run_command(auditwheel_command, env=build_env)
+    # First, run auditwheel to bundle all other dependencies
+    run_command([sys.executable, '-m', 'auditwheel', 'repair', '--exclude', 'libplugin_UCX.so', unrepaired_wheel, f'--wheel-dir={WHEELS_CACHE_HOME}'], env=build_env)
 
-    # --- CLEANUP ---
-    run_command(['rm', '-rf', temp_wheel_dir])
+    repaired_wheel = find_nixl_wheel_in_cache(WHEELS_CACHE_HOME)
+    if not repaired_wheel: raise RuntimeError("Failed to find repaired wheel from auditwheel.")
+
+    # Now, unpack the repaired wheel to perform surgery on it
+    wheel_unpack_dir = os.path.join(temp_wheel_dir, "wheel_unpack")
+    if os.path.exists(wheel_unpack_dir): shutil.rmtree(wheel_unpack_dir)
+    os.makedirs(wheel_unpack_dir)
+    run_command(['unzip', '-q', repaired_wheel, '-d', wheel_unpack_dir])
+
+    # Find the main NIXL extension file to inspect its dependencies
+    nixl_extension_search = glob.glob(os.path.join(wheel_unpack_dir, "nixl", "*.so"))
+    if not nixl_extension_search: raise RuntimeError("Could not find main NIXL .so extension file.")
+    nixl_extension_file = nixl_extension_search[0]
+
+    # Find the .libs directory
+    libs_dir_search = glob.glob(os.path.join(wheel_unpack_dir, "*.libs"))
+    if not libs_dir_search: raise RuntimeError("Could not find .libs directory in unpacked wheel.")
+    libs_dir = libs_dir_search[0]
+
+    # Find the incorrect libfabric that auditwheel bundled
+    incorrect_lib_basename = None
+    for lib in os.listdir(libs_dir):
+        if 'libfabric' in lib:
+            incorrect_lib_basename = lib
+            break
     
+    # Only perform replacement if we found a library to replace
+    if incorrect_lib_basename:
+        incorrect_lib_path = os.path.join(libs_dir, incorrect_lib_basename)
+        print(f"--> Found and deleting incorrect bundled library: {incorrect_lib_basename}", flush=True)
+        os.remove(incorrect_lib_path)
+
+        # Find the correct, pre-built libfabric library
+        lf_lib_path = os.path.join(lf_install_path, 'lib')
+        libfabric_so_files = glob.glob(os.path.join(lf_lib_path, 'libfabric.so.1.*'))
+        if not libfabric_so_files: raise RuntimeError(f"Could not find libfabric.so.1.* in {lf_lib_path}")
+        correct_libfabric_src = max(libfabric_so_files, key=len)
+        correct_libfabric_basename = os.path.basename(correct_libfabric_src)
+        
+        # Copy it into the wheel's .libs directory
+        print(f"--> Copying correct library '{correct_libfabric_basename}' into wheel", flush=True)
+        shutil.copy2(correct_libfabric_src, os.path.join(libs_dir, incorrect_lib_path))
+
+        # Use patchelf to update the dependency link in the main NIXL extension
+        # print(f"--> Patching NIXL extension to link against '{correct_libfabric_basename}'", flush=True)
+        # run_command(['patchelf', '--replace-needed', incorrect_lib_basename, correct_libfabric_basename, nixl_extension_file])
+    else:
+        print("--> Warning: Did not find a bundled libfabric to remove. It might have been excluded.", flush=True)
+
+    # Repack the corrected wheel, overwriting the one from auditwheel
+    print(f"--> Repacking corrected wheel to '{os.path.basename(repaired_wheel)}'", flush=True)
+    run_command(['zip', '-r', repaired_wheel, '.'], cwd=wheel_unpack_dir)
+
+    # --- Cleanup ---
+    shutil.rmtree(temp_wheel_dir)
+    
+    # --- Final Installation ---
     newly_built_wheel = find_nixl_wheel_in_cache(WHEELS_CACHE_HOME)
     if not newly_built_wheel:
         raise RuntimeError("Failed to find the repaired NIXL wheel.")
